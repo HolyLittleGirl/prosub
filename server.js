@@ -55,19 +55,23 @@ function rewriteTextEndpoints(text) {
   let changed = text;
 
   for (const host of PUBLIC_SUB_HOSTS) {
-    // Вариант в обычной ссылке:
-    // @prosub.onrender.com:443
-    // @prosub.onrender.com:2443
+    // Безопасная замена только endpoint после @.
+    //
+    // Было:
+    // vless://uuid@prosub.onrender.com:443
+    // vless://uuid@prosub.onrender.com:2443
+    // hysteria2://pass@prosub.onrender.com:443
+    //
+    // Станет:
+    // vless://uuid@cs.ottomator.ru:443
+    // vless://uuid@cs.ottomator.ru:2443
+    // hysteria2://pass@cs.ottomator.ru:443
     changed = changed.split(`@${host}:`).join(`@${VPN_ENDPOINT_HOST}:`);
 
-    // URL-encoded вариант:
+    // URL-encoded вариант, если 3x-ui или клиент где-то закодировал двоеточие:
     // @prosub.onrender.com%3A443
     // @prosub.onrender.com%3A2443
     changed = changed.split(`@${host}%3A`).join(`@${VPN_ENDPOINT_HOST}%3A`);
-
-    // На всякий случай, если где-то домен встретился без @
-    changed = changed.split(`${host}:`).join(`${VPN_ENDPOINT_HOST}:`);
-    changed = changed.split(`${host}%3A`).join(`${VPN_ENDPOINT_HOST}%3A`);
   }
 
   return changed;
