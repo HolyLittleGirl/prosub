@@ -49,10 +49,15 @@ const COUNTRY_PORT_RULES = [
   { match: "FI", port: "3443" },
   { match: "Finland", port: "3443" },
 
+  { match: "🇳🇱", port: "4443" }, 
+  { match: "NL", port: "4443" },
+  { match: "Netherlands", port: "4443" },
+  { match: "Holland", port: "4443" },
+
   // Пример для будущей страны:
-  // { match: "🇳🇱", port: "4443" },
-  // { match: "NL", port: "4443" },
-  // { match: "Netherlands", port: "4443" },
+  // { match: "🇳🇱", port: "5443" },
+  // { match: "NL", port: "5443" },
+  // { match: "Netherlands", port: "5443" },
 ];
 
 // Протоколы, у которых нужно переписывать основной endpoint.
