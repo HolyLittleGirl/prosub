@@ -4,26 +4,26 @@ const https = require("https");
 const PORT = process.env.PORT || 10000;
 
 // Основной сервер, где реально работает 3x-ui subscription
-const ORIGIN_HOST = "176.112.89.79";
-const ORIGIN_PORT = 51801;
+const ORIGIN_HOST = "PUBLIC_IP";
+const ORIGIN_PORT = SUB_PORT;
 
 // Host/SNI, под которым origin нормально отдаёт подписку
-const ORIGIN_SNI = "cssub.ottomator.ru";
+const ORIGIN_SNI = "cssub.domain.ru";
 
 const ORIGIN_TIMEOUT_MS = 7000;
 
 // Домены подписки, которые 3x-ui может ошибочно подставить внутрь конфигов как endpoint.
 // Их заменяем на настоящий VPN endpoint, сохраняя порт.
 const PUBLIC_SUB_HOSTS = [
-  "prosub.onrender.com",
-  "prosub.ottomator.ru",
-  "render-sub-proxy.onrender.com",
-  "s.ottomator.ru",
-  "cssub.ottomator.ru",
+  "sub.onrender.com",
+  "sub1.domain.ru",
+  "sub2.onrender.com",
+  "s.domain.ru",
+  "cssub.domain.ru",
 ];
 
 // Настоящий VPN endpoint
-const VPN_ENDPOINT_HOST = "cs.ottomator.ru";
+const VPN_ENDPOINT_HOST = "cs.domain.ru";
 
 function filterHeaders(headers) {
   const result = { ...headers };
@@ -56,21 +56,11 @@ function rewriteTextEndpoints(text) {
 
   for (const host of PUBLIC_SUB_HOSTS) {
     // Безопасная замена только endpoint после @.
-    //
-    // Было:
-    // vless://uuid@prosub.onrender.com:443
-    // vless://uuid@prosub.onrender.com:2443
-    // hysteria2://pass@prosub.onrender.com:443
-    //
-    // Станет:
-    // vless://uuid@cs.ottomator.ru:443
-    // vless://uuid@cs.ottomator.ru:2443
-    // hysteria2://pass@cs.ottomator.ru:443
+  
     changed = changed.split(`@${host}:`).join(`@${VPN_ENDPOINT_HOST}:`);
 
     // URL-encoded вариант, если 3x-ui или клиент где-то закодировал двоеточие:
-    // @prosub.onrender.com%3A443
-    // @prosub.onrender.com%3A2443
+  
     changed = changed.split(`@${host}%3A`).join(`@${VPN_ENDPOINT_HOST}%3A`);
   }
 
