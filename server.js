@@ -3,27 +3,64 @@ const https = require("https");
 
 const PORT = process.env.PORT || 10000;
 
-// Основной сервер, где реально работает 3x-ui subscription
-const ORIGIN_HOST = "PUBLIC_IP";
-const ORIGIN_PORT = SUB_PORT;
+// Основной сервер, где реально работает 3x-ui subscription.
+// Примерный публичный IP из документационного диапазона.
+const ORIGIN_HOST = "203.0.113.10";
+const ORIGIN_PORT = 51801;
 
-// Host/SNI, под которым origin нормально отдаёт подписку
-const ORIGIN_SNI = "cssub.domain.ru";
+// Host/SNI, под которым origin нормально отдаёт подписку.
+const ORIGIN_SNI = "cssub.example.com";
 
 const ORIGIN_TIMEOUT_MS = 7000;
 
 // Домены подписки, которые 3x-ui может ошибочно подставить внутрь конфигов как endpoint.
-// Их заменяем на настоящий VPN endpoint, сохраняя порт.
+// Их заменяем на настоящий VPN endpoint.
 const PUBLIC_SUB_HOSTS = [
   "sub.onrender.com",
-  "sub1.domain.ru",
-  "sub2.onrender.com",
-  "s.domain.ru",
-  "cssub.domain.ru",
+  "prosub.example.com",
+  "sub1.example.com",
+  "sub2.example.com",
+  "s.example.com",
+  "cssub.example.com",
 ];
 
-// Настоящий VPN endpoint
-const VPN_ENDPOINT_HOST = "cs.domain.ru";
+// Настоящий VPN endpoint.
+const VPN_ENDPOINT_HOST = "cs.example.com";
+
+// Порты по странам/названиям профилей.
+// match ищется в названии профиля после #.
+// Например:
+// #🇸🇪 Pro
+// #🇩🇪 Hysteria
+// #FI Hysteria
+//
+// Если 3x-ui всем Hysteria2-ссылкам подставит :443,
+// этот блок исправит порт по названию профиля.
+const COUNTRY_PORT_RULES = [
+  { match: "🇸🇪", port: "443" },
+  { match: "SE", port: "443" },
+  { match: "Sweden", port: "443" },
+
+  { match: "🇩🇪", port: "2443" },
+  { match: "DE", port: "2443" },
+  { match: "Germany", port: "2443" },
+
+  { match: "🇫🇮", port: "3443" },
+  { match: "FI", port: "3443" },
+  { match: "Finland", port: "3443" },
+
+  // Пример для будущей страны:
+  // { match: "🇳🇱", port: "4443" },
+  // { match: "NL", port: "4443" },
+  // { match: "Netherlands", port: "4443" },
+];
+
+// Протоколы, у которых нужно переписывать основной endpoint.
+const SUPPORTED_LINK_PREFIXES = [
+  "vless://",
+  "hysteria2://",
+  "hy2://",
+];
 
 function filterHeaders(headers) {
   const result = { ...headers };
@@ -39,6 +76,10 @@ function filterHeaders(headers) {
   delete result.upgrade;
   delete result["content-length"];
 
+  // Просим origin не сжимать ответ.
+  // Так проще безопасно переписывать тело подписки.
+  delete result["accept-encoding"];
+
   return result;
 }
 
@@ -51,37 +92,127 @@ function looksLikeBase64Subscription(body) {
   return /^[A-Za-z0-9+/=\r\n]+$/.test(text);
 }
 
-function rewriteTextEndpoints(text) {
-  let changed = text;
+function safeDecodeURIComponent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch (e) {
+    return value;
+  }
+}
 
-  for (const host of PUBLIC_SUB_HOSTS) {
-    // Безопасная замена только endpoint после @.
-  
-    changed = changed.split(`@${host}:`).join(`@${VPN_ENDPOINT_HOST}:`);
+function getRemarkFromLine(line) {
+  const hashIndex = line.indexOf("#");
 
-    // URL-encoded вариант, если 3x-ui или клиент где-то закодировал двоеточие:
-  
-    changed = changed.split(`@${host}%3A`).join(`@${VPN_ENDPOINT_HOST}%3A`);
+  if (hashIndex === -1) {
+    return "";
   }
 
-  return changed;
+  return safeDecodeURIComponent(line.slice(hashIndex + 1));
+}
+
+function getPortForRemark(remark) {
+  for (const rule of COUNTRY_PORT_RULES) {
+    if (remark.includes(rule.match)) {
+      return rule.port;
+    }
+  }
+
+  return null;
+}
+
+function isSupportedSubscriptionLine(line) {
+  return SUPPORTED_LINK_PREFIXES.some((prefix) => line.startsWith(prefix));
+}
+
+function rewriteMainEndpoint(line) {
+  if (!isSupportedSubscriptionLine(line)) {
+    return line;
+  }
+
+  const remark = getRemarkFromLine(line);
+  const forcedPort = getPortForRemark(remark);
+
+  // Разбираем только основной endpoint в начале строки:
+  //
+  // scheme://userinfo@host:port?params#remark
+  //
+  // Не трогаем query-параметры:
+  // sni=...
+  // obfs-password=...
+  // pbk=...
+  const match = line.match(
+    /^([a-zA-Z0-9+.-]+:\/\/)([^@\s#]+@)(\[[^\]]+\]|[^:/?#\s]+)(?::(\d+))?([\s\S]*)$/
+  );
+
+  if (!match) {
+    return line;
+  }
+
+  const scheme = match[1];
+  const userInfo = match[2];
+  const originalHost = match[3];
+  const originalPort = match[4] || "";
+  const rest = match[5] || "";
+
+  let newHost = originalHost;
+  let newPort = originalPort;
+
+  // Меняем host только если он из списка публичных subscription-доменов
+  // или уже равен правильному VPN endpoint.
+  if (
+    PUBLIC_SUB_HOSTS.includes(originalHost) ||
+    originalHost === VPN_ENDPOINT_HOST
+  ) {
+    newHost = VPN_ENDPOINT_HOST;
+  }
+
+  // Если по названию профиля задан порт — применяем его.
+  // Это лечит ситуацию, когда 3x-ui всем Hysteria2 генерит :443.
+  if (forcedPort) {
+    newPort = forcedPort;
+  }
+
+  const portPart = newPort ? `:${newPort}` : "";
+
+  return `${scheme}${userInfo}${newHost}${portPart}${rest}`;
+}
+
+function rewriteSubscriptionText(text) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+
+      if (!trimmed) {
+        return trimmed;
+      }
+
+      return rewriteMainEndpoint(trimmed);
+    })
+    .join("\n");
 }
 
 function rewriteSubscriptionBody(body) {
-  if (!looksLikeBase64Subscription(body)) {
-    return body;
-  }
+  const originalText = body.toString("utf8").trim();
 
-  const encoded = body.toString("utf8").trim();
+  if (!looksLikeBase64Subscription(body)) {
+    const changedPlainText = rewriteSubscriptionText(originalText);
+
+    if (changedPlainText === originalText) {
+      return body;
+    }
+
+    return Buffer.from(changedPlainText, "utf8");
+  }
 
   let decoded;
   try {
-    decoded = Buffer.from(encoded, "base64").toString("utf8");
+    decoded = Buffer.from(originalText, "base64").toString("utf8");
   } catch (e) {
     return body;
   }
 
-  const changed = rewriteTextEndpoints(decoded);
+  const changed = rewriteSubscriptionText(decoded);
 
   if (changed === decoded) {
     return body;
@@ -224,7 +355,9 @@ function renderBrowserPage(req, decoded) {
 }
 
 function getOriginPath(reqUrl) {
-  return reqUrl.replace(/[?&]raw=1$/, "").replace("?raw=1&", "?");
+  const parsed = new URL(reqUrl, "http://localhost");
+  parsed.searchParams.delete("raw");
+  return `${parsed.pathname}${parsed.search}`;
 }
 
 function fetchOrigin(req, callback) {
@@ -241,6 +374,7 @@ function fetchOrigin(req, callback) {
       Host: ORIGIN_SNI,
       "X-Forwarded-Proto": "https",
       "X-Forwarded-Host": req.headers.host || "",
+      "X-Forwarded-For": req.socket.remoteAddress || "",
       "X-Real-IP": req.socket.remoteAddress || "",
     },
   };
